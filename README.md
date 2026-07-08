@@ -1,49 +1,316 @@
-class_name Bridge
-extends Structure
+# 🗺️ Map Generator
 
-## Layer 3 special case: sits on a WATER hex and, unlike every other
-## structure, does NOT block movement - it's specifically what lets a road
-## (or a unit) cross a river instead of being stopped by it.
+A procedural hex-grid map generator built in **Godot 4**, set in a rural,
+WW2-era European countryside. Generates layered terrain, villages, rivers,
+roads, and bridges that actually connect to one another — with live weather
+and a day/night cycle on top.
 
-enum BridgeType { WOODEN_PEDESTRIAN, METAL_DRAWBRIDGE, CONCRETE_FLAT }
+![Godot](https://img.shields.io/badge/Godot-4.x-478cbf)
+![GDScript](https://img.shields.io/badge/Language-GDScript-355570)
+![Status](https://img.shields.io/badge/Status-Prototype-yellow)
 
-var bridge_type: int
-var max_weight_tons: float
-var width_m: float
-var deck_directions: Array = []   # up to 2 HexUtils.DIRECTIONS indices - which edges the road enters/exits from
+<!--
+  📸 Add a screenshot or GIF of the generated map here once you have one:
+  ![Map preview](docs/preview.png)
+-->
 
-const MAX_WEIGHT_TONS = {
-	BridgeType.WOODEN_PEDESTRIAN: 0.3,   # foot traffic, maybe a bicycle
-	BridgeType.METAL_DRAWBRIDGE: 40.0,   # light vehicles, half-tracks
-	BridgeType.CONCRETE_FLAT: 60.0,      # trucks, most armor
-}
+## ✨ Features
 
-const WIDTH_M = {
-	BridgeType.WOODEN_PEDESTRIAN: 1.5,
-	BridgeType.METAL_DRAWBRIDGE: 4.0,
-	BridgeType.CONCRETE_FLAT: 6.0,
-}
+- 🗺️ **Procedural hex terrain** — mud, clay, rock, gravel, water, sand, lime — with an organic, county/province-like map boundary instead of a plain rectangle
+- 🌲 **Vegetation & forests** — grass, young trees, and mature trees with real species (oak, spruce, willow, pine, birch)
+- 🏘️ **Multi-hex villages** — walls with automatic gates, a well, houses/church/barn, and a population tracked by men/women/children
+- 🌊 **Rivers** that split into distributaries, rejoin, and escape shallow pits to reach real low ground — with canals carrying them through town
+- 🌉 **Bridges** — wooden pedestrian, metal drawbridge, and concrete flat, each with its own weight limit and width
+- 🛣️ **A\* road network** connecting every village, costed by real terrain (mud vs. gravel vs. paved road vs. rain-soaked ground)
+- ☁️ **Live weather** — drifting cloud clusters with a floating/parallax look, rain/snow accumulation, and a full day-night brightness cycle
+- 🖱️ **Click any hex** to inspect every layer of data on it - ground, vegetation, structures, weather, and more
 
-## Extra movement cost added on top of the base 1.0 "normal ground" rate -
-## this replaces the underlying water traction entirely once a bridge exists.
-const MOVE_COST_OVERRIDE = {
-	BridgeType.WOODEN_PEDESTRIAN: 0.3,   # narrow, foot-only, adds some friction
-	BridgeType.METAL_DRAWBRIDGE: 0.1,
-	BridgeType.CONCRETE_FLAT: -0.2,      # as fast as a paved road
-}
+## 📋 Requirements
 
-const BRIDGE_COLORS = {
-	BridgeType.WOODEN_PEDESTRIAN: Color(0.55, 0.40, 0.25),
-	BridgeType.METAL_DRAWBRIDGE: Color(0.50, 0.50, 0.55),
-	BridgeType.CONCRETE_FLAT: Color(0.75, 0.75, 0.72),
-}
+- [Godot 4.x](https://godotengine.org/download)
 
-func _init(_bridge_type: int) -> void:
-	super(Structure.Kind.BRIDGE, _bridge_type, 0)
-	bridge_type = _bridge_type
-	blocks_movement = false
-	max_weight_tons = MAX_WEIGHT_TONS[_bridge_type]
-	width_m = WIDTH_M[_bridge_type]
+## 🚀 Quick start
 
-func can_support(weight_tons: float) -> bool:
-	return weight_tons <= max_weight_tons
+1. Copy `scenes/` and `scripts/` into your Godot project root (e.g. `res://scenes/`, `res://scripts/`)
+2. Open `scenes/main_menu.tscn` and press **F6** (or set it as your project's Main Scene under *Project Settings → Application → Run*, then press F5)
+3. Click **Generate map**
+
+All UI (menu button, floating panels, form fields) is built in code at
+runtime — there's nothing to wire up by hand in the editor.
+
+## 🎮 Controls
+
+| Input | Action |
+|---|---|
+| Mouse wheel | Zoom |
+| Left-click + drag | Pan |
+| Left-click (no drag) | Inspect the clicked hex *(while Select is ON)* |
+| `R` | Regenerate with a new random seed (quick reroll) |
+| `[` / `]` | Slow down / speed up the day-night cycle |
+| `C` | Jump time forward by 1 in-game hour |
+
+The floating panel (top-right) lets you set map width/height, hex size,
+seed, village/river count, map shape, and cloud speed, plus toggle Select,
+Day/Night, and Clouds. The info panel (top-left) shows everything about
+whichever hex you last clicked.
+
+## 🧭 Project structure
+
+```
+scenes/
+  main_menu.tscn           entry point - one "Generate map" button
+  map_scene.tscn            the map itself
+scripts/
+  main_menu.gd               builds the menu UI in code
+  hex_utils.gd                hex grid math (axial coords, flat-top hexes)
+  hex_tile.gd                 per-hex container tying all layers together
+  map_generator.gd            generates the static layers once
+  map_renderer.gd             draws the map, runs the weather/time loop, and
+                               builds the floating settings + info panels
+  weather_system.gd           layer 7 - drifting clouds/precipitation (global)
+  time_system.gd              time of day -> brightness (global)
+  layers/
+    ground_layer.gd           layer 1 - mud/clay/rock/gravel/water/sand/lime
+    vegetation_layer.gd       layer 2 - grass/young trees/roads/paths/runway
+    structure.gd              layer 3 - mature trees, buildings, camps, vehicles, boulders
+    bridge.gd                 layer 3 special case - bridges (see below)
+    living_entity.gd          layer 4 - humans, animals, motorcycles
+    ground_weather.gd         layer 5 enum/constants (wet/puddles/snow/ice)
+    ground_weather_state.gd   layer 5 per-tile mutable state
+    village.gd                multi-hex settlement data (population, footprint)
+```
+
+## 📖 How it works
+
+<details>
+<summary><strong>The layer model</strong></summary>
+
+**Layer 1 - Ground type** (`GroundLayer`): the base surface - mud, clay, rock,
+gravel, water, sand, lime. Always present. Drives base traction; water is the
+only hard "can't cross" ground type unless there's a bridge.
+
+**Layer 2 - Vegetation** (`VegetationLayer`): what covers the ground - bare,
+short/long grass, young trees, or a road surface (gravel/cobble/dirt/asphalt/
+runway). Roads are just another vegetation value, generated by an A* road
+system, costed against `HexTile.movement_cost()` (ground + vegetation +
+current ground weather combined). Villages get cobble roads automatically;
+approach roads near a village upgrade to cobble too. Asphalt and runway
+aren't auto-placed - they're there for you to hand-place for scenario-specific
+features (an airfield, a highway).
+
+**Layer 3 - Structures** (`Structure`): mature trees (with species - spruce,
+oak, willow, pine, birch, picked by moisture/elevation), village buildings
+(house/church/barn/well), boulders, bridges, and slots reserved for
+camps/large vehicles you can place yourself. These block movement but have a
+`capacity` and `occupants` list - a unit can garrison a building, take cover
+in/behind a tree or boulder, up to that capacity (the well and bridges are
+the exceptions: they don't block movement). Note: "forest" is actually two
+things - light, walkable `YOUNG_TREES` vegetation, and on top of some of
+those hexes, a blocking `MATURE_TREE` structure (dense woodland).
+
+**Layer 4 - Living entities** (`LivingEntity`): humans, animals, motorcycles.
+These either stand in the open on a tile (`HexTile.occupants`) or occupy a
+Structure (`Structure.occupants`, via `add_occupant`/`remove_occupant`). Map
+generation only sprinkles a little wildlife for flavor - actual unit
+placement is scenario logic you'll add later.
+
+**Layer 5 - Ground weather** (`GroundWeather` / `GroundWeatherState`): per-tile
+wetness/snow that accumulates or dries out over time, stored on the tile
+itself (`HexTile.ground_weather`). It's not generated once - `map_renderer.gd`
+updates it continuously based on what's overhead.
+
+**Layer 7 - High weather** (`WeatherSystem`): clouds drift across the whole
+map as a wind-driven noise field, sampled by real-world position rather than
+stored per-tile. `get_cloud_cover(world_pos)` and `is_precipitating(world_pos)`
+are what layer 5's updates and global brightness both read from. `season`
+controls whether precipitation becomes rain or snow.
+
+**Global time/brightness** (`TimeSystem`): a day-night sine curve, dimmed
+further by local cloud cover. Every hex is drawn at its own brightness, so
+you'll see cloud shadows drift across the terrain, plus a full day/night cycle.
+
+</details>
+
+<details>
+<summary><strong>Map shape</strong></summary>
+
+The floating panel's **Map Shape** dropdown picks between:
+- **Square**: a hard rectangular boundary
+- **Random** (default): an organic, county/province-like boundary carved out
+  of that same rectangle using low-frequency noise - the center is always
+  land, corners are mostly cut off (rounding them), and the edge wobbles in
+  and out rather than following a straight line, so it reads like a natural
+  boundary rather than a map tile
+
+This is implemented as simply as possible: `_is_within_map_shape(col, row)`
+decides whether a hex gets created at all during generation. Every other
+step - rivers, roads, villages, rendering - already only ever iterates
+`hexes.keys()` and checks `hexes.has(neighbor)`, so a hex that's never
+created is automatically treated as "off the map" everywhere, with no
+further changes needed anywhere else in the pipeline.
+
+Two more knobs are exposed on `MapGenerator` (Inspector-only, not in the
+floating panel): `map_shape_detail` (noise frequency - lower gives broader,
+smoother coastline features; higher gives more jagged detail) and
+`map_shape_fill` (lower gives a larger/fuller shape, higher carves away more).
+
+</details>
+
+<details>
+<summary><strong>Villages</strong></summary>
+
+Villages are multi-hex settlements, not single tiles:
+- A village center is picked for being flat, good ground, with a
+  river-adjacency bonus, then it grows outward, claiming every unclaimed hex
+  within a random radius (`village_min_radius`-`village_max_radius`, default
+  1-2 hexes) - **including water**, see Canals below
+- The center hex always gets a **well** (`Structure.BuildingKind.WELL`) -
+  doesn't block movement, just a landmark
+- ~65% of the remaining land hexes get a building - mostly houses, a chance
+  of a barn, and at most one church per village. The rest stay open as a
+  square/street
+- **Walls**: every hex checks its own 6 neighbors; any side whose neighbor
+  isn't part of the same village becomes a wall segment. This means the
+  outer boundary is walled automatically with no separate bookkeeping, and
+  it updates correctly regardless of the village's (irregular, since
+  overlapping footprints get clipped) actual shape
+- **Gates**: after roads are generated, any wall segment a road actually
+  passes through gets removed - so villages the road network reaches always
+  have at least one opening
+- **Population**: tracked as an aggregate on the `Village` object (not as
+  individual clickable entities), split into men/women/children. Given the
+  WW2 setting, the split is deliberately skewed toward women and children
+  (working-age men away at war)
+
+</details>
+
+<details>
+<summary><strong>Canals</strong></summary>
+
+If a river happens to run through a village's footprint, that water gets
+claimed as part of the village too (`HexTile.is_canal = true`) rather than
+being left out as a gap - otherwise the two riverbanks would be one
+`Village` in name only, with no actual way to walk between them.
+
+Canal hexes render as ordinary town ground with a thin stream line drawn
+through them (following the river's real course, via `_stream_directions`),
+rather than a solid tinted water hex - it should read as "a town tile with a
+stream running through it," not "a water tile that happens to be in a town."
+When the stream enters and exits from two non-opposite sides (a bend), the
+line is drawn as two segments meeting at the hex center, so a bend actually
+looks like a bend instead of a shortcut across the hex.
+
+Not every canal hex gets a bridge: only ones that actually border a normal
+(non-canal) town tile are candidates, and even then only roughly one
+crossing per 3 hexes of canal gets a wooden pedestrian footbridge, spanning
+between whichever two land neighbors are closest to directly opposite each
+other. The rest of the canal stays a visible stream with no crossing - you
+have to use one of the bridges, same as a real river through a real town. If
+the road network's shortest path later needs a crossing at one of those
+exact spots, it upgrades the footbridge to a proper road-capable one instead
+of leaving it stuck at a 0.3-ton pedestrian limit.
+
+</details>
+
+<details>
+<summary><strong>Rivers and bridges</strong></summary>
+
+Rivers trace steepest descent from a high point, with two upgrades over a
+naive version:
+- **Pit-escape**: if a river hits a shallow local dip that isn't actually low
+  ground, it runs a small bounded search outward for the nearest genuinely
+  lower hex (or an existing river) and carves a path there instead of just
+  stopping. This is what makes rivers reach real low ground / the map edge
+  instead of petering out after a few hexes
+- **Splitting**: away from its start/end, a river has a small chance
+  (`river_branch_chance`, default 10%) to peel off a distributary that traces
+  its own path to a separate ending
+- **Rejoining**: any trace - a fresh river source or a branch - stops the
+  moment it runs into an existing river tile, which is what a merge is
+
+**Bridges** are a `Structure` that's the one exception to "structures block
+movement" - a `Bridge` sits on a `WATER` hex and instead enables crossing it.
+They're placed automatically wherever the road-building pathfinder is forced
+across a river; you can also place one yourself with
+`Bridge.new(Bridge.BridgeType.X)`. Three types, each with its own max weight
+and width:
+
+| Type | Max weight | Width |
+|---|---|---|
+| Wooden pedestrian | 0.3 t | 1.5 m |
+| Metal drawbridge | 40 t | 4.0 m |
+| Concrete flat | 60 t | 6.0 m |
+
+Visually, the deck is drawn between the actual edges the road enters and
+exits from (`Bridge.deck_directions`) - so it follows the road's real
+direction through that hex, not the river's, and not any fixed screen axis.
+
+`HexTile.movement_cost()` uses the bridge's own rate instead of the
+underlying (very high) water cost once one is built, and
+`HexTile.blocks_movement()` treats a bridged water hex as passable. Weight
+enforcement isn't wired into pathfinding yet - `Bridge.can_support(weight_tons)`
+is there for whenever you add unit weights and want to check it.
+
+</details>
+
+<details>
+<summary><strong>Clouds</strong></summary>
+
+The cloud-cover noise field that drives brightness dimming is also drawn
+directly: any hex whose cloud value is above `CLOUD_VISIBLE_THRESHOLD` gets
+a bright, mostly-opaque white overlay, with strength scaling smoothly from
+the threshold up to full cover. Since that noise field is spatially coherent
+(broad, low-frequency Perlin, drifting with `WeatherSystem.wind_speed_mps`/
+`wind_angle_deg`), thresholding it naturally groups neighboring hexes into
+blob-shaped clusters rather than scattering independent flecks - so it reads
+as actual drifting cloud clusters made of hexes, not per-hex noise.
+
+The cloud shape itself is drawn offset from the ground position it's
+darkening (`CLOUD_SHADOW_OFFSET`) - the darkened patch of terrain (its
+"shadow") stays exactly where the noise field says it should, but the
+visible cloud shape is shifted up and to the side of that, so the two
+visibly separate rather than sitting flush on the ground. That gap is what
+reads as "floating above the terrain" instead of a flat tinted overlay.
+
+</details>
+
+<details>
+<summary><strong>Performance notes</strong></summary>
+
+Two separate update cadences, both in `map_renderer.gd`:
+- **`CLOUD_UPDATE_INTERVAL`** (0.15s default): moves the cloud layer and
+  brightness. Fast enough to look like real drift, not a once-a-second jump,
+  while still sampling noise far less often than every frame would
+- **`WEATHER_UPDATE_INTERVAL`** (1.0s default): ground wetness/snow
+  accumulation, which doesn't need to update smoothly, so it stays slow/cheap
+
+Neither does a full 60fps redraw - full-map redraws with noise sampling on
+every one of ~2500 hexes at 60fps is heavy on weaker/integrated GPUs. If
+it's still heavy on your machine:
+- Raise `CLOUD_UPDATE_INTERVAL` first (e.g. to 0.3-0.5s)
+- Raise `WEATHER_UPDATE_INTERVAL` to 2.0-3.0 seconds for a bit more headroom
+- Lower `map_width_km`/`map_height_km` (fewer hexes) or raise `hex_size_m`
+  (same area, fewer/bigger hexes)
+- Panning/zooming still triggers an immediate redraw (that one's cheap, it's
+  a single frame, not a loop)
+
+</details>
+
+## 🗺️ Roadmap / known limitations
+
+- Overlapping village footprints get silently clipped rather than pushed
+  apart - fine visually, just means village size can vary near others
+- Village population is aggregate data only - no individual villager
+  entities are spawned or drawn
+- No way back to the main menu from the map scene yet
+- Bridge weight limits aren't enforced by pathfinding yet
+- No lakes - rivers stop at local elevation minima instead of pooling
+- Camps and large vehicles have enums reserved but aren't auto-placed yet
+- Rendering is immediate-mode `_draw()` - fine for ~2500 hexes at the current
+  update rate, but a `TileMap` for the static layers would scale better and
+  let you use real sprite art
+
+## 📄 License
+
+No license has been set yet - add one here (e.g. MIT) before sharing this
+repository publicly.
